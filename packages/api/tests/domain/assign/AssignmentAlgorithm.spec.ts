@@ -1,3 +1,8 @@
+import type {
+  OfferedCourse,
+  StudentChoice,
+  StudentPhase,
+} from '../../../src/generated/prisma/client.js'
 import type { EnrollPhase } from '../../../src/prisma/PrismaTypes'
 
 import { assign } from '../../../src/domain/assign/AssignmentAlgorithm'
@@ -145,5 +150,142 @@ describe('AssignmentAlgorithm', () => {
     ] as never)
 
     expect(await assign(1)).toEqual({ user1: ['B'] })
+  })
+
+  describe('time conflicts across assignment rounds', () => {
+    function course(
+      moduleCode: string,
+      overrides: Partial<OfferedCourse> = {},
+    ): OfferedCourse & {
+      Course: { creditPoints: number; title: { en: string } }
+    } {
+      return {
+        appointments: { dates: [], type: 'weekly' },
+        Course: { creditPoints: 3, title: { en: moduleCode } },
+        externalRegistration: false,
+        extraInfo: null,
+        for: [],
+        hideMinParticipants: false,
+        maxParticipants: 1,
+        minParticipants: 0,
+        moduleCode,
+        moodleCourse: null,
+        phaseId: 1,
+        ...overrides,
+      }
+    }
+
+    function student(
+      username: string,
+      choices: [string, number][],
+    ): StudentPhase & { StudentChoice: StudentChoice[] } {
+      return {
+        createdAt: new Date('2026-01-01T00:00:00Z'),
+        creditsNeeded: 6,
+        phaseId: 1,
+        StudentChoice: choices.map(([moduleCode, points]) => ({
+          moduleCode,
+          phaseId: 1,
+          points,
+          username,
+        })),
+        username,
+      }
+    }
+
+    const appointments: OfferedCourse['appointments'] = {
+      dates: [{ from: '2026-01-05T10:00:00', to: '2026-01-05T12:00:00' }],
+      type: 'weekly',
+    }
+
+    beforeEach(() => {
+      prismaMock.enrollphase.findUnique.mockResolvedValue({} as EnrollPhase)
+    })
+
+    it('uses redistributed conflict points to award a scarce seat without affecting other students', async () => {
+      const courses = [
+        course('A', { appointments }),
+        course('B', { appointments, maxParticipants: 2 }),
+        course('C'),
+        course('D'),
+        course('E'),
+      ]
+      const students = [
+        student('user1', [
+          ['A', 60],
+          ['B', 30],
+          ['C', 10],
+        ]),
+        student('user2', [
+          ['D', 55],
+          ['C', 35],
+          ['E', 10],
+        ]),
+        student('user3', [['B', 100]]),
+      ]
+      prismaMock.offeredCourse.findMany.mockResolvedValue(courses)
+      prismaMock.studentPhase.findMany.mockResolvedValue(students)
+
+      const result = await assign(1)
+
+      expect(result).toEqual({
+        user1: ['A', 'C'],
+        user2: ['D', 'E'],
+        user3: ['B'],
+      })
+      for (const offered of courses) {
+        const count = Object.values(result).filter((modules) =>
+          modules.includes(offered.moduleCode),
+        ).length
+        expect(count).toBeLessThanOrEqual(
+          offered.maxParticipants ?? Number.MAX_SAFE_INTEGER,
+        )
+      }
+      expect(students[0].StudentChoice.map((choice) => choice.points)).toEqual([
+        60, 30, 10,
+      ])
+    })
+
+    it('returns only one course if all other choices conflict and credits are still missing', async () => {
+      prismaMock.offeredCourse.findMany.mockResolvedValue([
+        course('A', { appointments }),
+        course('B', { appointments }),
+        course('C', { appointments }),
+      ])
+      prismaMock.studentPhase.findMany.mockResolvedValue([
+        student('user1', [
+          ['A', 80],
+          ['B', 15],
+          ['C', 5],
+        ]),
+      ])
+
+      expect(await assign(1)).toEqual({ user1: ['A'] })
+    })
+
+    it('restores an excluded fallback with its original points after cancellation', async () => {
+      prismaMock.offeredCourse.findMany.mockResolvedValue([
+        course('A', { appointments, maxParticipants: 2, minParticipants: 2 }),
+        course('B', { appointments }),
+        course('C'),
+        course('D'),
+      ])
+      prismaMock.studentPhase.findMany.mockResolvedValue([
+        student('user1', [
+          ['A', 60],
+          ['B', 30],
+          ['C', 10],
+        ]),
+        student('user2', [
+          ['D', 80],
+          ['C', 20],
+        ]),
+      ])
+
+      expect(await assign(1)).toEqual({
+        user1: ['B'],
+        user2: ['D', 'C'],
+      })
+    })
   })
 })

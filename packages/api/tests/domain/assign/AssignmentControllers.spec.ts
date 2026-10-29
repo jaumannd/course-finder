@@ -156,4 +156,105 @@ describe('AssignmentStudentController', () => {
       '2',
     ])
   })
+
+  it('removes all simultaneous conflicts before redistributing their combined points', () => {
+    const appointments: CourseAppointmentsJson<string> = {
+      dates: [{ from: '2026-01-05T10:00:00', to: '2026-01-05T12:00:00' }],
+      type: 'weekly',
+    }
+    offeredCourses = ['1', '2', '3', '4', '5', '6'].map((moduleCode) => ({
+      appointments: ['1', '2', '3'].includes(moduleCode)
+        ? appointments
+        : { dates: [], type: 'weekly' },
+      Course: { creditPoints: 3 },
+      moduleCode,
+    }))
+    phase.StudentChoice = [800, 100, 51, 30, 15, 4].map((points, index) => ({
+      moduleCode: String(index + 1),
+      phaseId: 0,
+      points,
+      username: 'user1',
+    }))
+    controller = new AssignmentStudentController(phase, offeredCourses)
+
+    controller.gainCourse('1')
+
+    expect(
+      controller.choices.map(({ moduleCode, points }) => [moduleCode, points]),
+    ).toEqual([
+      ['4', 81],
+      ['5', 65],
+      ['6', 54],
+    ])
+    expect(controller.lost.map((choice) => choice.moduleCode).sort()).toEqual([
+      '2',
+      '3',
+    ])
+    expect(controller.lost.map((choice) => choice.points).sort()).toEqual([
+      100, 51,
+    ])
+    expect(controller.gained.map((choice) => choice.points)).toEqual([800])
+    expect(
+      [...controller.choices, ...controller.gained].reduce(
+        (sum, choice) => sum + choice.points,
+        0,
+      ),
+    ).toBe(1000)
+  })
+
+  it('finishes below the credit target when every remaining choice conflicts', () => {
+    const appointments: CourseAppointmentsJson<string> = {
+      dates: [{ from: '2026-01-05T10:00:00', to: '2026-01-05T12:00:00' }],
+      type: 'weekly',
+    }
+    offeredCourses.forEach((course) => (course.appointments = appointments))
+    phase.StudentChoice.push({
+      moduleCode: '2',
+      phaseId: 0,
+      points: 100,
+      username: 'user1',
+    })
+    controller = new AssignmentStudentController(phase, offeredCourses)
+
+    controller.gainCourse('1')
+    controller.gainCourse('2')
+
+    expect(controller.choices).toEqual([])
+    expect(controller.gained.map((choice) => choice.moduleCode)).toEqual(['1'])
+    expect(controller.lost.map((choice) => choice.moduleCode)).toEqual(['2'])
+    expect(controller.isFinished()).toBe(true)
+  })
+
+  it('keeps overlapping alternatives eligible until one of them is gained', () => {
+    const appointments: CourseAppointmentsJson<string> = {
+      dates: [{ from: '2026-01-05T10:00:00', to: '2026-01-05T12:00:00' }],
+      type: 'weekly',
+    }
+    offeredCourses[1].appointments = appointments
+    offeredCourses.push({
+      appointments,
+      Course: { creditPoints: 3 },
+      moduleCode: '3',
+    })
+    phase.StudentChoice.push(
+      { moduleCode: '2', phaseId: 0, points: 90, username: 'user1' },
+      { moduleCode: '3', phaseId: 0, points: 10, username: 'user1' },
+    )
+    controller = new AssignmentStudentController(phase, offeredCourses)
+
+    controller.gainCourse('1')
+    expect(controller.choices.map((choice) => choice.moduleCode)).toEqual([
+      '2',
+      '3',
+    ])
+    expect(controller.lost).toEqual([])
+
+    controller.gainCourse('2')
+    expect(controller.choices).toEqual([])
+    expect(controller.gained.map((choice) => choice.moduleCode)).toEqual([
+      '1',
+      '2',
+    ])
+    expect(controller.lost.map((choice) => choice.moduleCode)).toEqual(['3'])
+  })
 })

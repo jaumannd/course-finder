@@ -1,7 +1,3 @@
-import type {
-  Course,
-  OfferedCourse,
-} from '../../../src/generated/prisma/client.js'
 import type { EnrollPhase } from '../../../src/prisma/PrismaTypes'
 
 import { assign } from '../../../src/domain/assign/AssignmentAlgorithm'
@@ -94,18 +90,60 @@ describe('AssignmentAlgorithm', () => {
     ],
   ])('should assign students to courses %s', async (_, input, output) => {
     prismaMock.enrollphase.findUnique.mockResolvedValue({} as EnrollPhase)
-    // @ts-ignore
-    prismaMock.offeredCourse.findMany.mockResolvedValue([
-      { Course: { creditPoints: 3 }, maxParticipants: 1, moduleCode: '1' },
-      { Course: { creditPoints: 3 }, minParticipants: 4, moduleCode: '2' },
-      { Course: { creditPoints: 4 }, maxParticipants: 2, moduleCode: '3' },
-      { Course: { creditPoints: 3 }, moduleCode: '4' },
-      { Course: { creditPoints: 3 }, moduleCode: '5' },
-    ] as Partial<OfferedCourse & { Course: Course }>[])
+    prismaMock.offeredCourse.findMany.mockResolvedValue(
+      [
+        { Course: { creditPoints: 3 }, maxParticipants: 1, moduleCode: '1' },
+        { Course: { creditPoints: 3 }, minParticipants: 4, moduleCode: '2' },
+        { Course: { creditPoints: 4 }, maxParticipants: 2, moduleCode: '3' },
+        { Course: { creditPoints: 3 }, moduleCode: '4' },
+        { Course: { creditPoints: 3 }, moduleCode: '5' },
+      ].map((course) => ({
+        appointments: { dates: [], type: 'weekly' },
+        ...course,
+      })) as never,
+    )
 
     // @ts-ignore
     prismaMock.studentPhase.findMany.mockResolvedValue(input)
 
     expect(await assign(1)).toEqual(output)
+  })
+
+  it('reconsiders conflicting alternatives after a course is cancelled', async () => {
+    prismaMock.enrollphase.findUnique.mockResolvedValue({} as EnrollPhase)
+    prismaMock.offeredCourse.findMany.mockResolvedValue([
+      {
+        appointments: {
+          dates: [{ from: '2026-01-05T10:00:00', to: '2026-01-05T12:00:00' }],
+          type: 'weekly',
+        },
+        Course: { creditPoints: 3 },
+        maxParticipants: null,
+        minParticipants: 2,
+        moduleCode: 'A',
+      },
+      {
+        appointments: {
+          dates: [{ from: '2026-01-05T11:00:00', to: '2026-01-05T13:00:00' }],
+          type: 'weekly',
+        },
+        Course: { creditPoints: 3 },
+        maxParticipants: null,
+        minParticipants: 0,
+        moduleCode: 'B',
+      },
+    ] as never)
+    prismaMock.studentPhase.findMany.mockResolvedValue([
+      {
+        creditsNeeded: 3,
+        StudentChoice: [
+          { moduleCode: 'A', phaseId: 1, points: 99, username: 'user1' },
+          { moduleCode: 'B', phaseId: 1, points: 1, username: 'user1' },
+        ],
+        username: 'user1',
+      },
+    ] as never)
+
+    expect(await assign(1)).toEqual({ user1: ['B'] })
   })
 })
